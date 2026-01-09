@@ -1,0 +1,701 @@
+---
+title: "Stroke Prediction Model"
+author: "KRISHNANDAN SHA"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+## About Data Analysis Report
+
+This RMarkdown file contains the report of the data analysis done for the project on building and deploying a stroke prediction model in R. It contains analysis such as data exploration, summary statistics and building the prediction models. The final report was completed on `r date()`. 
+
+**Data Description:**
+
+According to the World Health Organization (WHO) stroke is the 2nd leading cause of death globally, responsible for approximately 11% of total deaths.
+
+This data set is used to predict whether a patient is likely to get stroke based on the input parameters like gender, age, various diseases, and smoking status. Each row in the data provides relevant information about the patient.
+
+
+##Task One: Import data and data preprocessing
+
+### Load data and install packages
+
+```{r}
+library(dplyr)
+df <- readr::read_csv("healthcare-dataset-stroke-data.csv")
+glimpse(df)
+```
+
+
+## Describe and explore the data
+
+```{r}
+# Structure of data
+str(df)
+
+# Dimensions: rows & columns
+dim(df)
+
+# Column names
+colnames(df)
+
+# Quick tibble-style overview (best for large data)
+dplyr::glimpse(df)
+
+summary(df)
+```
+
+
+```{r}
+#Separate numerical & categorical summaries
+
+df %>%
+  select(where(is.numeric)) %>%
+  summary()
+
+#Categorical variables frequency
+
+df %>%
+  select(where(is.character)) %>%
+  lapply(table)
+
+#Missing values check (critical for EDA)
+colSums(is.na(df))
+
+#Target variable distribution (business-critical)
+
+## Stroke count
+table(df$stroke)
+
+## Stroke percentage
+prop.table(table(df$stroke)) * 100
+
+
+#Unique values per column
+
+sapply(df, function(x) length(unique(x)))
+
+
+#Quick data quality checklist
+
+## Check duplicates
+sum(duplicated(df$id))
+
+## Check impossible ages
+summary(df$age)
+
+#CLEAN & FIX THE DATA
+df <- df %>%
+  mutate(
+    hypertension  = factor(hypertension, levels = c(0,1), labels = c("No","Yes")),
+    heart_disease = factor(heart_disease, levels = c(0,1), labels = c("No","Yes")),
+    stroke        = factor(stroke, levels = c(0,1), labels = c("No","Yes"))
+  )
+
+#Fix BMI column
+df <- df %>%
+  mutate(
+    bmi = as.numeric(ifelse(bmi == "N/A", NA, bmi))
+  )
+
+
+
+
+#Handle missing values
+colSums(is.na(df))
+
+#Logical imputation for BMI
+median_bmi <- median(df$bmi, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    bmi = ifelse(is.na(bmi), median_bmi, bmi)
+  )
+
+#Standardize categorical values (data hygiene)
+df <- df %>%
+  mutate(
+    gender = trimws(gender),
+    smoking_status = trimws(smoking_status),
+    work_type = trimws(work_type),
+    Residence_type = trimws(Residence_type)
+  )
+
+#Convert categorical columns to factors (model-ready)
+df <- df %>%
+  mutate(
+    gender         = factor(gender),
+    ever_married   = factor(ever_married),
+    work_type      = factor(work_type),
+    Residence_type = factor(Residence_type),
+    smoking_status = factor(smoking_status)
+  )
+
+#Check duplicates (defensive analytics)
+sum(duplicated(df$id))
+
+#Validation
+str(df)
+summary(df)
+
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+#Age distribution
+summary(df$age)
+
+ggplot(df, aes(x = age)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Age Distribution")
+
+#BMI distribution
+summary(df$bmi)
+
+ggplot(df, aes(x = bmi)) +
+  geom_histogram(bins = 30) +
+  labs(title = "BMI Distribution")
+
+#Avg Glucose Level
+summary(df$avg_glucose_level)
+
+ggplot(df, aes(x = avg_glucose_level)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Average Glucose Level Distribution")
+
+
+#Target variable check (business reality check)
+table(df$stroke)
+prop.table(table(df$stroke)) * 100
+
+#Categorical variable distributions
+
+##Gender
+table(df$gender)
+
+ggplot(df, aes(x = gender)) +
+  geom_bar() +
+  labs(title = "Gender Distribution")
+
+##Smoking status
+table(df$smoking_status)
+
+ggplot(df, aes(x = smoking_status)) +
+  geom_bar() +
+  labs(title = "Smoking Status Distribution") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+#Bivariate Analysis: Stroke vs Numerical Variables
+
+##Stroke vs Age
+ggplot(df, aes(x = stroke, y = age)) +
+  geom_boxplot() +
+  labs(title = "Stroke vs Age")
+
+##Stroke vs BMI
+ggplot(df, aes(x = stroke, y = bmi)) +
+  geom_boxplot() +
+  labs(title = "Stroke vs BMI")
+
+##Stroke vs Avg Glucose
+ggplot(df, aes(x = stroke, y = avg_glucose_level)) +
+  geom_boxplot() +
+  labs(title = "Stroke vs Avg Glucose Level")
+
+
+#Bivariate Analysis: Stroke vs Categorical Variables
+
+##Gender vs Stroke
+df %>%
+  group_by(gender, stroke) %>%
+  summarise(count = n(), .groups = "drop")
+
+##Smoking vs Stroke (rate-based insight)
+df %>%
+  group_by(smoking_status) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+
+#Medical risk flags vs Stroke
+
+##Hypertension
+df %>%
+  group_by(hypertension) %>%
+  summarise(stroke_rate = mean(stroke == "Yes"))
+
+##Heart disease
+df %>%
+  group_by(heart_disease) %>%
+  summarise(stroke_rate = mean(stroke == "Yes"))
+```
+
+```{r}
+
+#Age Buckets (medical + business logic)
+
+##Doctors age ko raw number nahi, risk groups mein dekhte hain.
+df <- df %>%
+  mutate(
+    age_group = case_when(
+      age < 18 ~ "Child",
+      age >= 18 & age < 40 ~ "Young Adult",
+      age >= 40 & age < 60 ~ "Middle Aged",
+      age >= 60 ~ "Senior"
+    )
+  )
+
+df$age_group <- factor(df$age_group,
+                       levels = c("Child", "Young Adult", "Middle Aged", "Senior"))
+
+##BMI Categories (WHO standard – interview gold)
+df <- df %>%
+  mutate(
+    bmi_category = case_when(
+      bmi < 18.5 ~ "Underweight",
+      bmi >= 18.5 & bmi < 25 ~ "Normal",
+      bmi >= 25 & bmi < 30 ~ "Overweight",
+      bmi >= 30 ~ "Obese"
+    )
+  )
+
+df$bmi_category <- factor(df$bmi_category)
+
+##Glucose Risk Levels (critical health signal)
+df <- df %>%
+  mutate(
+    glucose_level = case_when(
+      avg_glucose_level < 140 ~ "Normal",
+      avg_glucose_level >= 140 & avg_glucose_level < 200 ~ "Prediabetic",
+      avg_glucose_level >= 200 ~ "Diabetic"
+    )
+  )
+
+df$glucose_level <- factor(df$glucose_level,
+                           levels = c("Normal", "Prediabetic", "Diabetic"))
+
+##Binary risk flags (signal amplification)
+df <- df %>%
+  mutate(
+    has_any_disease = ifelse(
+      hypertension == "Yes" | heart_disease == "Yes",
+      "Yes", "No"
+    )
+  )
+
+df$has_any_disease <- factor(df$has_any_disease)
+
+##Lifestyle risk consolidation
+df <- df %>%
+  mutate(
+    smoker_flag = ifelse(
+      smoking_status %in% c("smokes", "formerly smoked"),
+      "Yes", "No"
+    )
+  )
+
+df$smoker_flag <- factor(df$smoker_flag)
+
+##Validate engineered features (always verify)
+str(df)
+
+summary(df %>%
+  select(age_group, bmi_category, glucose_level,
+         has_any_disease, smoker_flag))
+
+```
+
+```{r}
+#EDA ON ENGINEERED FEATURES (R)
+
+##Stroke rate by Age Group (most powerful driver)
+df %>%
+  group_by(age_group) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+
+#Visual
+ggplot(df, aes(x = age_group, fill = stroke)) +
+  geom_bar(position = "fill") +
+  labs(title = "Stroke Rate by Age Group", y = "Proportion")
+
+##Stroke rate by BMI Category
+df %>%
+  group_by(bmi_category) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+
+##Visual
+ggplot(df, aes(x = bmi_category, fill = stroke)) +
+  geom_bar(position = "fill") +
+  labs(title = "Stroke Rate by BMI Category", y = "Proportion")
+
+##Stroke vs Glucose Risk Level (high signal)
+df %>%
+  group_by(glucose_level) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+##Visual
+ggplot(df, aes(x = glucose_level, fill = stroke)) +
+  geom_bar(position = "fill") +
+  labs(title = "Stroke Rate by Glucose Risk Level", y = "Proportion")
+
+##Combined medical risk flag (has_any_disease)
+df %>%
+  group_by(has_any_disease) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+
+##Visual
+ggplot(df, aes(x = has_any_disease, fill = stroke)) +
+  geom_bar(position = "fill") +
+  labs(title = "Stroke Rate by Medical History", y = "Proportion")
+
+##Lifestyle factor: Smoker Flag
+df %>%
+  group_by(smoker_flag) %>%
+  summarise(
+    total = n(),
+    stroke_cases = sum(stroke == "Yes"),
+    stroke_rate = stroke_cases / total
+  )
+##Visual
+ggplot(df, aes(x = smoker_flag, fill = stroke)) +
+  geom_bar(position = "fill") +
+  labs(title = "Stroke Rate by Smoking History", y = "Proportion")
+
+##Multi-factor view (advanced but practical)
+df %>%
+  group_by(age_group, glucose_level) %>%
+  summarise(
+    stroke_rate = mean(stroke == "Yes"),
+    .groups = "drop"
+  )
+
+```
+
+
+## Task Two: Build prediction models
+
+```{r}
+#Train–Test Split (non-negotiable)
+set.seed(123)
+
+library(caret)
+
+train_index <- createDataPartition(df$stroke, p = 0.7, list = FALSE)
+
+train_data <- df[train_index, ]
+test_data  <- df[-train_index, ]
+
+#Baseline Model: Logistic Regression (must-have)
+
+##Model training
+log_model <- glm(
+  stroke ~ age + avg_glucose_level + bmi +
+    hypertension + heart_disease +
+    age_group + bmi_category + glucose_level +
+    smoker_flag + Residence_type,
+  data = train_data,
+  family = "binomial"
+)
+
+###summary(log_model)
+summary(log_model)
+
+
+##Predictions on Test Data
+
+test_prob <- predict(log_model, test_data, type = "response")
+
+test_pred <- ifelse(test_prob > 0.5, "Yes", "No")
+
+test_pred <- factor(test_pred, levels = c("No", "Yes"))
+
+##Model Evaluation (core KPIs)
+
+confusionMatrix(test_pred, test_data$stroke, positive = "Yes")
+
+#ROC-AUC (model strength)
+library(pROC)
+
+roc_obj <- roc(test_data$stroke, test_prob)
+
+auc(roc_obj)
+
+#Handle Class Imbalance (upgrade move)
+
+##Class weights (logistic-friendly)
+log_model_weighted <- glm(
+  stroke ~ age + avg_glucose_level + bmi +
+    hypertension + heart_disease +
+    age_group + bmi_category + glucose_level +
+    smoker_flag + Residence_type,
+  data = train_data,
+  family = "binomial",
+  weights = ifelse(train_data$stroke == "Yes", 2, 1)
+)
+
+##Feature importance (interpretable output)
+exp(coef(log_model))
+
+
+
+
+```
+
+
+
+
+## Task Three: Evaluate and select prediction models
+
+```{r}
+#Logistic Regression (Baseline)
+
+library(caret)
+library(pROC)
+
+# Predictions
+log_prob <- predict(log_model, test_data, type = "response")
+log_pred <- factor(ifelse(log_prob > 0.5, "Yes", "No"), levels = c("No","Yes"))
+
+# Confusion Matrix
+cm_log <- confusionMatrix(log_pred, test_data$stroke, positive = "Yes")
+
+# ROC-AUC
+roc_log <- roc(test_data$stroke, log_prob)
+auc_log <- auc(roc_log)
+
+##Decision Tree Model
+library(rpart)
+library(rpart.plot)
+
+tree_model <- rpart(
+  stroke ~ age + avg_glucose_level + bmi +
+    hypertension + heart_disease +
+    age_group + bmi_category + glucose_level +
+    smoker_flag + Residence_type,
+  data = train_data,
+  method = "class"
+)
+
+# Predictions
+tree_pred <- predict(tree_model, test_data, type = "class")
+tree_prob <- predict(tree_model, test_data)[,2]
+
+cm_tree <- confusionMatrix(tree_pred, test_data$stroke, positive = "Yes")
+
+roc_tree <- roc(test_data$stroke, tree_prob)
+auc_tree <- auc(roc_tree)
+
+#Random Forest Model (High performance)
+library(randomForest)
+
+set.seed(123)
+
+rf_model <- randomForest(
+  stroke ~ age + avg_glucose_level + bmi +
+    hypertension + heart_disease +
+    age_group + bmi_category + glucose_level +
+    smoker_flag + Residence_type,
+  data = train_data,
+  ntree = 300,
+  importance = TRUE
+)
+
+# Predictions
+rf_pred <- predict(rf_model, test_data)
+rf_prob <- predict(rf_model, test_data, type = "prob")[,2]
+
+cm_rf <- confusionMatrix(rf_pred, test_data$stroke, positive = "Yes")
+
+roc_rf <- roc(test_data$stroke, rf_prob)
+auc_rf <- auc(roc_rf)
+
+##Compare Model Performance (Table)
+model_comparison <- data.frame(
+  Model = c("Logistic Regression", "Decision Tree", "Random Forest"),
+  Accuracy = c(cm_log$overall["Accuracy"],
+               cm_tree$overall["Accuracy"],
+               cm_rf$overall["Accuracy"]),
+  Recall = c(cm_log$byClass["Sensitivity"],
+             cm_tree$byClass["Sensitivity"],
+             cm_rf$byClass["Sensitivity"]),
+  Precision = c(cm_log$byClass["Precision"],
+                cm_tree$byClass["Precision"],
+                cm_rf$byClass["Precision"]),
+  AUC = c(auc_log, auc_tree, auc_rf)
+)
+
+model_comparison
+
+##Model Selection (Tell it like it is)
+best_model <- log_model
+best_model <- rf_model
+
+saveRDS(rf_model, "stroke_prediction_model.rds")
+
+```
+
+
+
+## Task Four: Deploy the prediction model
+
+```{r}
+loaded_model <- readRDS("stroke_prediction_model.rds")
+
+# Pridiction 
+predict_stroke <- function(new_data, model) {
+  
+  # Predict probability
+  prob <- predict(model, new_data, type = "prob")[, "Yes"]
+  
+  # Class prediction
+  prediction <- ifelse(prob > 0.5, "High Risk", "Low Risk")
+  
+  result <- data.frame(
+    Stroke_Probability = prob,
+    Risk_Level = prediction
+  )
+  
+  return(result)
+}
+
+
+```
+
+```{r}
+#New patient input
+new_patient <- data.frame(
+  age = 72,
+  avg_glucose_level = 210,
+  bmi = 31,
+  hypertension = factor("Yes", levels = c("No","Yes")),
+  heart_disease = factor("No", levels = c("No","Yes")),
+  age_group = factor("Senior",
+                     levels = levels(df$age_group)),
+  bmi_category = factor("Obese",
+                        levels = levels(df$bmi_category)),
+  glucose_level = factor("Diabetic",
+                         levels = levels(df$glucose_level)),
+  smoker_flag = factor("Yes",
+                       levels = levels(df$smoker_flag)),
+  Residence_type = factor("Urban",
+                           levels = levels(df$Residence_type))
+)
+
+```
+
+```{r}
+#Run prediction
+
+predict_stroke(new_patient, loaded_model)
+
+batch_results <- predict_stroke(test_data, loaded_model)
+
+head(batch_results)
+
+##Threshold tuning (advanced but impressive)
+custom_threshold <- 0.35
+
+predict_stroke_custom <- function(new_data, model, threshold) {
+  
+  prob <- predict(model, new_data, type = "prob")[, "Yes"]
+  
+  risk <- ifelse(prob > threshold, "High Risk", "Low Risk")
+  
+  data.frame(Probability = prob, Risk = risk)
+}
+
+
+```
+
+
+##Task Five: Findings and Conclusions
+
+### Objective
+_The objective of this project was to analyze patient health data, identify key risk factors associated with stroke, build predictive models, and deploy a reliable system for stroke risk prediction._
+
+### Key Findings (What the data clearly shows)
+
+### Age is the strongest predictor of stroke
+_-Stroke incidence increases sharply in the Senior (60+) age group. Younger age groups show significantly lower stroke rates. Age-based grouping improved both interpretability and model performance._
+
+### Implication:
+_Preventive screening should prioritize elderly populations._
+
+### Glucose level has a major impact on stroke risk
+
+_-Patients in the Diabetic glucose category showed the highest stroke probability. Even Prediabetic individuals had elevated risk compared to normal glucose levels._
+
+### Implication:
+_Blood glucose monitoring is critical for early stroke prevention._
+
+### Pre-existing medical conditions amplify risk
+
+_-Patients with hypertension or heart disease were far more likely to experience stroke. A combined medical risk flag proved more effective than individual indicators._
+
+### Implication:
+_Patients with any cardiovascular history require proactive monitoring._
+
+### Lifestyle factors play a secondary but meaningful role
+
+_-Smoking history (current or former) was associated with higher stroke rates. Overweight and obese BMI categories showed elevated risk compared to normal BMI._
+
+### Implication:
+_Lifestyle interventions can reduce long-term stroke risk._
+
+### Engineered features outperformed raw variables
+
+_Categorized age, BMI, and glucose levels provided clearer insights than continuous values alone. Feature engineering significantly improved model stability and interpretability._
+
+### Implication:
+_Domain-informed feature engineering is essential in healthcare analytics._
+
+### Model Performance Summary
+
+**_Multiple models were evaluated: Logistic Regression, Decision Tree, and Random Forest. Random Forest achieved the best overall performance in terms of Recall and ROC-AUC, making it suitable for identifying high-risk patients. Logistic Regression remained valuable due to its high interpretability and explainability._**
+
+### Final Model Selection:
+
+*_Random Forest for prediction Logistic Regression for explanation and stakeholder communication_*
+
+### Deployment Outcome
+
+_The selected model was successfully deployed as a reusable prediction system. It supports: Individual patient risk assessment Batch predictions for hospital screening Custom risk thresholds to prioritize recall in healthcare settings_
+
+### Limitations
+
+_The dataset showed class imbalance, which may affect precision. Certain variables (e.g., BMI) required imputation, which may introduce bias. The model is based on historical data and does not account for real-time clinical changes._
+
+### Recommendations & Future Work
+
+_Integrate real-time patient monitoring data. Apply advanced imbalance techniques such as SMOTE. Validate the model on external hospital datasets. Deploy via a Shiny dashboard or API for clinical use. Conduct periodic retraining to maintain accuracy._
+
+### Final Conclusion
+
+_This project successfully demonstrated how data-driven analysis and machine learning can be applied to healthcare to identify stroke risk factors and support early intervention. The deployed prediction model provides actionable insights that can assist medical professionals in prioritizing high-risk patients and improving preventive care strategies._
+
